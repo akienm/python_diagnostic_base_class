@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "python-diagnostic-base-class"
+version = "0.1.0"
+description = "Logging + perf + instance-naming base class for agents and automation frameworks"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "loguru>=0.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "pytest-cov"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["diagnostic_base*"]
