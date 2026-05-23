@@ -5,11 +5,15 @@ From SWADL: instance naming via gc.get_referrers, hierarchical get_name,
             timeout_remaining, lazy per-class logger.
 From ADC:   device_id stamping, datacenter_logs path convention.
 Logging:    loguru backend via TaggedLogger.
+Operational logs: one JSON file per log record → <log_root>/<device_id>/log/json/.
+  These are rolling operational logs (30-day retention), not durable knowledge.
+  Call prune_json_logs() from day-close to enforce the retention window.
 """
 
 from __future__ import annotations
 
 import gc
+import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +26,68 @@ from .perf import Stopwatch
 
 # Per-class logger cache so subclasses see their own class name in log records
 _logger_cache: dict[type, TaggedLogger] = {}
+
+# Registered once on first DiagnosticBase instantiation
+_json_sink_id: int | None = None
+
+
+def _json_file_sink(message) -> None:
+    """Write one JSON file per log record. Silent noop on any error."""
+    try:
+        record = message.record
+        extra = record["extra"]
+        device_id = extra.get("device_id", "unknown")
+        log_root = Path(extra.get("log_root", "datacenter_logs"))
+
+        ts = record["time"]
+        ts_str = ts.strftime("%Y%m%d-%H%M%S-") + f"{ts.microsecond:06d}"
+        level = record["level"].name.lower()
+        logger_name = (record["name"] or "unknown").replace(".", "_")[:40]
+
+        out_dir = log_root / device_id / "log" / "json"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        payload = {
+            "ts": ts.isoformat(),
+            "level": record["level"].name,
+            "logger": record["name"],
+            "message": record["message"],
+            "device_id": device_id,
+        }
+        if extra.get("class_name"):
+            payload["class_name"] = extra["class_name"]
+        if extra.get("tag"):
+            payload["tag"] = extra["tag"]
+
+        filename = f"{ts_str}_{logger_name}_{level}.json"
+        (out_dir / filename).write_text(
+            json.dumps(payload, default=str), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
+def prune_json_logs(log_root: Path | str | None = None, days: int = 30) -> int:
+    """Delete JSON log files older than `days` days. Returns count deleted.
+
+    Call from day-close to enforce the 30-day rolling retention window.
+    Each device prunes its own local log tree.
+    """
+    import time as _time
+
+    root = Path(log_root) if log_root else Path("datacenter_logs")
+    if not root.exists():
+        return 0
+    cutoff = _time.time() - days * 86400
+    deleted = 0
+    for f in root.rglob("log/json/*.json"):
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+                deleted += 1
+        except Exception:
+            pass
+    return deleted
 
 
 class _SafeDict(dict):
@@ -52,12 +118,18 @@ class DiagnosticBase:
         parent: "DiagnosticBase | None" = None,
         **kwargs: Any,
     ):
+        global _json_sink_id
         self._device_id = device_id or type(self).__name__.lower()
         self._parent = parent
         # Explicit name wins; gc lookup is a best-effort fallback for module/class-scope vars
         self._instance_name: str | None = name or None
         self._start_time = time.monotonic()
         self.apply_kwargs(**kwargs)
+        # Register the JSON file sink once — all future log calls write one file per record
+        if _json_sink_id is None:
+            _json_sink_id = _root_logger.add(
+                _json_file_sink, enqueue=False, backtrace=False, diagnose=False
+            )
 
     # ── Instance naming (SWADL gc trick) ─────────────────────────────────────
 
@@ -96,12 +168,13 @@ class DiagnosticBase:
 
     @property
     def logger(self) -> TaggedLogger:
-        """Lazy per-class TaggedLogger bound with class and device context."""
+        """Lazy per-class TaggedLogger bound with class, device, and log_root context."""
         cls = type(self)
         if cls not in _logger_cache:
             bound = _root_logger.bind(
                 class_name=cls.__name__,
                 device_id=self._device_id,
+                log_root=str(self._log_root),
             )
             _logger_cache[cls] = TaggedLogger(bound)
         return _logger_cache[cls]

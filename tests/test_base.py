@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -140,3 +141,71 @@ class TestLogger:
         assert sw.device_id == "mydev"
         assert sw.stopwatch_id == "op"
         assert sw.comment == "test"
+
+
+class TestJsonLogSink:
+    def test_info_writes_json_file(self, tmp_path):
+        """Each log call produces one JSON file in <log_root>/<device_id>/log/json/."""
+        import time as _time
+        from diagnostic_base.base import _logger_cache
+
+        class _TestDevice(DiagnosticBase):
+            _log_root = tmp_path
+
+        # Clear cache so new binding picks up tmp_path as log_root
+        _logger_cache.pop(_TestDevice, None)
+        obj = _TestDevice(device_id="testdev")
+        obj.info("hello from test")
+        _time.sleep(0.05)  # let loguru flush (enqueue=False so near-instant)
+
+        out_dir = tmp_path / "testdev" / "log" / "json"
+        files = list(out_dir.glob("*.json"))
+        assert len(files) >= 1, f"expected JSON file in {out_dir}, got none"
+
+        payload = json.loads(files[0].read_text())
+        assert payload["device_id"] == "testdev"
+        assert payload["level"] == "INFO"
+        assert "hello from test" in payload["message"]
+
+    def test_filename_encodes_timestamp_and_level(self, tmp_path):
+        """Filename contains YYYYMMDD-HHMMSS, logger name, and level."""
+        import re
+        from diagnostic_base.base import _logger_cache
+
+        class _Dev2(DiagnosticBase):
+            _log_root = tmp_path
+
+        _logger_cache.pop(_Dev2, None)
+        obj = _Dev2(device_id="dev2")
+        obj.warning("test warning")
+
+        import time as _time
+
+        _time.sleep(0.05)
+        out_dir = tmp_path / "dev2" / "log" / "json"
+        files = list(out_dir.glob("*_warning.json"))
+        assert files, "expected a *_warning.json file"
+        assert re.match(r"\d{8}-\d{6}-\d{6}_", files[0].name)
+
+    def test_prune_json_logs_removes_old_files(self, tmp_path):
+        """prune_json_logs deletes files older than the retention window."""
+        import time as _time
+        from diagnostic_base.base import prune_json_logs
+
+        out_dir = tmp_path / "dev" / "log" / "json"
+        out_dir.mkdir(parents=True)
+        old_file = out_dir / "old.json"
+        old_file.write_text("{}")
+        # Back-date to 31 days ago
+        old_ts = _time.time() - 31 * 86400
+        import os
+
+        os.utime(old_file, (old_ts, old_ts))
+
+        new_file = out_dir / "new.json"
+        new_file.write_text("{}")
+
+        deleted = prune_json_logs(log_root=tmp_path, days=30)
+        assert deleted == 1
+        assert not old_file.exists()
+        assert new_file.exists()
