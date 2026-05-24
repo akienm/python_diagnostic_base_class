@@ -1,17 +1,17 @@
-"""DEPRECATED — diagnostic_base has moved into agent_datacenter.
+"""DEPRECATED — diagnostic_base has moved into unseen_university.
 
-Install agent_datacenter instead:
-    pip install -e ~/dev/src/agent_datacenter
+Install unseen_university instead:
+    pip install -e ~/dev/src/UnseenUniversity
 
 This copy is frozen. The canonical version lives at:
-    agent_datacenter/diagnostic_base/ in the agent_datacenter repo.
+    unseen_university/diagnostic_base/ in the UnseenUniversity repo.
 """
 
 import warnings
 
 warnings.warn(
     "python_diagnostic_base_class is deprecated. "
-    "Install agent_datacenter instead — diagnostic_base is now part of that package.",
+    "Install unseen_university instead — diagnostic_base is now part of that package.",
     DeprecationWarning,
     stacklevel=2,
 )
